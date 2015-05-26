@@ -8,12 +8,19 @@ import org.scalatest.{FunSuite, Matchers}
  */
 class NumValTest extends FunSuite with Matchers {
   test("test encode of byte") {
-//    val pbr = new SimplePositionedMutableByteRange(Array.fill(10)(0.toByte))
+
     for {
-      testVal <- List(-1.toByte, Int.MinValue, 0.01, 0.04, "abcde")
+      (testVal, dataType) <- List((-1.toByte, "byte"),
+        (Int.MinValue, "int"),
+        (0.01f, "float"),
+        (0.04, "double"),
+        ("abcde", "string"))
     } {
-      val bytes = DataVal(testVal).bytes.toList
-      println(bytes)
+      val bytes = DataVal(dataType, testVal).bytes
+      println(bytes.toList)
+      val parsed = DataVal.valueOf(dataType, bytes, 0, bytes.length)
+      println(parsed)
+      println(parsed.bytes.toList)
     }
   }
 }
