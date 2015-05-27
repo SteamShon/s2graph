@@ -35,15 +35,15 @@ object EdgeType {
     for ((k, v) <- props) bytes = Bytes.add(bytes, Array.fill(1)(k.toByte), v.bytes)
     bytes
   }
-  def bytesToProps(dataTypes: Seq[String])(pbr: PositionedByteRange, offset: Int) = {
+  def bytesToProps(dataTypes: Map[Int, String])(pbr: PositionedByteRange, offset: Int) = {
     val bytes = pbr.getBytes()
     var pos = offset
     val len = bytes(pos)
-    assert(dataTypes.length == len)
+    assert(dataTypes.size == len)
     pos += 1
     val kvs = for (i <- (0 until len)) yield {
       val k = bytes(pos)
-      val dataType = dataTypes(i)
+      val dataType = dataTypes(k)
       pos += 1
       val v = DataVal.valueOf(dataType)(pbr, pos)
       pos += v.bytes.length
@@ -77,12 +77,12 @@ object EdgeType {
   }
 
   object EdgeQualifier {
-    def apply(idxDataTypes: Seq[String], dataType: String)(pbr: PositionedByteRange, offset: Int): EdgeQualifier = {
+    def apply(propsDataTypes: Map[Int, String], dataType: String)(pbr: PositionedByteRange, offset: Int): EdgeQualifier = {
       val bytes = pbr.getBytes()
       var pos = offset
 
       val (props, tgtVertexId) = {
-        val (props, endAt) = bytesToProps(idxDataTypes)(pbr, pos)
+        val (props, endAt) = bytesToProps(propsDataTypes)(pbr, pos)
         val tgtVertexId = VertexId(dataType)(pbr, endAt, isEdge = true, useHash = false)
         pos = endAt + tgtVertexId.bytes.length
         (props, tgtVertexId)
@@ -107,5 +107,38 @@ object EdgeType {
         filtered.toList
       }
     }
+  }
+
+  object EdgeValue {
+    def apply(dataTypes: Map[Int, String])(pbr: PositionedByteRange, offset: Int): EdgeValue = {
+      val (props, endAt) = bytesToProps(dataTypes)(pbr, offset)
+      EdgeValue(props)
+    }
+  }
+  case class EdgeValue(props: Seq[(Int, DataVal)]) {
+    lazy val bytes = propsToBytes(props)
+  }
+
+  /** snapshot edge */
+  object EdgeQualifierInverted {
+    def apply(dataType: String)(pbr: PositionedByteRange, offset: Int): EdgeQualifierInverted = {
+      val tgtVertexId = VertexId(dataType)(pbr, offset, isEdge = true, useHash = false)
+      EdgeQualifierInverted(tgtVertexId)
+    }
+  }
+  case class EdgeQualifierInverted(tgtVertexId: VertexId) {
+    val innerTgtVertexId = tgtVertexId.updateUseHash(false)
+    lazy val bytes = innerTgtVertexId.bytes
+  }
+  object EdgeValueInverted {
+    def apply(dataTypes: Map[Int, String])(pbr: PositionedByteRange, offset: Int): EdgeValueInverted = {
+      val bytes = pbr.getBytes()
+      val op = bytes(offset)
+      val (props, _) = bytesToProps(dataTypes)(pbr, offset + 1)
+      EdgeValueInverted(op, props)
+    }
+  }
+  case class EdgeValueInverted(op: Byte, props: Seq[(Int, DataVal)]) {
+    lazy val bytes = Bytes.add(Array.fill(1)(op), propsToBytes(props))
   }
 }

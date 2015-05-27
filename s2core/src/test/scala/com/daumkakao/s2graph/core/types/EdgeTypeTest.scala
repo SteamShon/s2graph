@@ -1,6 +1,6 @@
 package com.daumkakao.s2graph.core.types
 
-import com.daumkakao.s2graph.core.{GraphUtil, DataVal}
+import com.daumkakao.s2graph.core.{Edge, GraphUtil, DataVal}
 import com.daumkakao.s2graph.core.types.LabelWithDirection
 import org.apache.hadoop.hbase.util.{SimplePositionedByteRange, Bytes}
 import org.scalatest.{Matchers, FunSuite}
@@ -31,23 +31,25 @@ class EdgeTypeTest extends FunSuite with Matchers {
 
   def lessThan(x: Array[Byte], y: Array[Byte]) = Bytes.compareTo(x, y) < 0
 
-  def testOrder[T](sortedSet: IndexedSeq[T], dataType: String)(initial: Any) = {
+  def testOrder(sortedSet: Seq[DataVal]) = {
     val vIds = for {
       isEdge <- List(true)
       useHash <- List(true)
       labelOrderSeq <- List(1.toByte)
       isInverted <- List(true, false)
     } yield {
-        var prevVertexId = VertexId(columnId, DataVal(dataType)(initial), isEdge = isEdge, useHash = useHash)
+        var prevVertexId = VertexId(columnId, sortedSet.head, isEdge = isEdge, useHash = useHash)
         var prevEdgeRowKey = EdgeRowKey(prevVertexId, labelWithDir, labelOrderSeq, isInverted)
         val startEdgeRowKey = prevEdgeRowKey
         val rets = for {
-          id <- sortedSet
+          id <- sortedSet.tail
         } yield {
-            val vertexId = VertexId(columnId, DataVal(dataType)(id), isEdge = isEdge, useHash = useHash)
+            val vertexId = VertexId(columnId, id, isEdge = isEdge, useHash = useHash)
             val edgeRowKey = EdgeRowKey(vertexId, labelWithDir, labelOrderSeq, isInverted)
             val pbr = new SimplePositionedByteRange(edgeRowKey.bytes)
-            val decodedEdgeRowKey = EdgeRowKey.apply(dataType)(pbr, 0)
+            val decodedEdgeRowKey = EdgeRowKey.apply(id.dataType)(pbr, 0)
+
+            println(s"$edgeRowKey > $prevEdgeRowKey")
             val comp = largerThan(edgeRowKey.bytes, startEdgeRowKey.bytes) &&
             largerThan(edgeRowKey.bytes, prevEdgeRowKey.bytes) &&
             edgeRowKey == decodedEdgeRowKey
@@ -59,27 +61,114 @@ class EdgeTypeTest extends FunSuite with Matchers {
       }
     vIds.forall(x => x)
   }
+  /**
+   * for each target vertexId, test if propsSeqs is ordered properly per target vertexId
+   * */
+  def testOrderQualifier(propsSeq: Seq[Seq[(Int, DataVal)]], tgtVertexIds: Seq[DataVal]) = {
+    val rets = for {
+      isEdge <- List(true)
+      useHash <- List(false)
+      (opStr, op) <- GraphUtil.operations
+      vid <- tgtVertexIds
+    } yield {
+        val vertexId = VertexId(columnId, vid, isEdge = isEdge, useHash = useHash)
+        var prev = EdgeQualifier(propsSeq.head, vertexId, op)
+        val start = prev
+
+        val rets = for {
+          r <- propsSeq.tail
+        } yield {
+            val idxDataTypes = r.map{ case (seq, dataVal) => (seq -> dataVal.dataType) } toMap
+            val cur = EdgeQualifier(r, vertexId, op)
+            val pbr = new SimplePositionedByteRange(cur.bytes)
+            val decoded = EdgeQualifier(idxDataTypes, vid.dataType)(pbr, 0)
+            println(s"$cur > $prev")
+            val comp = largerThan(cur.bytes, start.bytes) &&
+              largerThan(cur.bytes, prev.bytes) &&
+              cur == decoded
+
+            prev = cur
+            comp
+          }
+        rets.forall(x => x)
+      }
+    rets.forall(x => x)
+  }
+  /** for each props, check if each target vertex id is ordered properly */
+  def testOrderQualifierInverted(propsSeq: Seq[Seq[(Int, DataVal)]], tgtVertexIds: Seq[DataVal]) = {
+    val rets = for {
+      isEdge <- List(true)
+      useHash <- List(false)
+      (opStr, op) <- GraphUtil.operations
+      props <- propsSeq
+    } yield {
+        val idxDataTypes = props.map{ case (seq, dataVal) => (seq -> dataVal.dataType) } toMap
+        val vertexId = VertexId(columnId, tgtVertexIds.head, isEdge = isEdge, useHash = useHash)
+        var prev = EdgeQualifier(props, vertexId, op)
+        val start = prev
+
+        val rets = for {
+          vid <- tgtVertexIds.tail
+        } yield {
+            val curVertexId = VertexId(columnId, vid, isEdge = isEdge, useHash = useHash)
+            val cur = EdgeQualifier(props, curVertexId, op)
+            val pbr = new SimplePositionedByteRange(cur.bytes)
+            val decoded = EdgeQualifier(idxDataTypes, vid.dataType)(pbr, 0)
+            println(s"$cur > $prev")
+            val comp = largerThan(cur.bytes, start.bytes) &&
+              largerThan(cur.bytes, prev.bytes) &&
+              cur == decoded
+
+            prev = cur
+            comp
+          }
+        rets.forall(x => x)
+      }
+    rets.forall(x => x)
+  }
+
   test("sort order of integer EdgeRowKey") {
     val ranges = (Int.MinValue + 10 until Int.MinValue + 100) ++
       (-256 until 0) ++ (0 until 256) ++ (Int.MaxValue - 100 to Int.MaxValue)
-    testOrder(ranges, "int")(Int.MinValue)
+    testOrder(ranges.map(r => intVal(r.toInt)))
   }
 
   test("sort order of long EdgeRowKey") {
     val ranges = (Long.MinValue + 10 to Long.MinValue + 100) ++ (-256L to 0L) ++ (1L to 256L) ++
       (Long.MaxValue - 100 to Long.MaxValue - 10)
-    testOrder(ranges, "long")(Long.MinValue)
+    testOrder(ranges.map(r => longVal(r.toLong)))
   }
-  test("sort order of EdgeQualifier") {
-    val smallProps = Seq((1, intVal(10)), (2, intVal(20)))
-    val largeProps = Seq((1, intVal(10)), (2, intVal(21)))
-    val tgtVertexId = VertexId(columnId, intVal(10000), isEdge = true, useHash = false)
-    val small = EdgeQualifier(smallProps, tgtVertexId, GraphUtil.operations("insert"))
-    val pbr = new SimplePositionedByteRange(small.bytes)
-    val decodedSmall = EdgeQualifier.apply(Seq("int", "int"), "int")(pbr, 0)
-    val large = EdgeQualifier(largeProps, tgtVertexId, GraphUtil.operations("insert"))
 
-    small == decodedSmall && largerThan(large.bytes, small.bytes)
-
+  test("sort order of int props with int id EdgeQualifier") {
+    val ranges = Seq(
+      Seq((1, intVal(10)), (2, intVal(0))),
+      Seq((1, intVal(10)), (2, intVal(20))),
+      Seq((1, intVal(10)), (2, intVal(21))),
+      Seq((1, intVal(11)), (2, intVal(20)))
+    )
+    val tgtVertexIds = Seq(
+      intVal(10000),
+      intVal(10001)
+    )
+    testOrderQualifier(ranges, tgtVertexIds) &&
+      testOrderQualifierInverted(ranges, tgtVertexIds)
   }
+  test("sort order of int props with long EdgeQualifier") {
+    val ranges = Seq(
+      Seq((1, intVal(10)), (2, intVal(0))),
+      Seq((1, intVal(10)), (2, intVal(20))),
+      Seq((1, intVal(10)), (2, intVal(21))),
+      Seq((1, intVal(11)), (2, intVal(20)))
+    )
+    val tgtVertexIds = Seq(
+      DataVal("byte")(Byte.MaxValue),
+      intVal(Int.MaxValue),
+      longVal(-10L),
+      longVal(0L),
+      longVal(Int.MaxValue.toLong)
+    )
+    testOrderQualifier(ranges, tgtVertexIds) &&
+      testOrderQualifierInverted(ranges, tgtVertexIds)
+  }
+
 }
