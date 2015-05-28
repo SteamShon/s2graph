@@ -2,81 +2,93 @@ package com.daumkakao.s2graph.core
 
 import com.daumkakao.s2graph.core.models.{HLabelMeta, HLabel}
 import play.api.libs.json._
-import HBaseElement.InnerVal
 
 import scala.util.parsing.combinator.JavaTokenParsers
 
+/**
+ * helper to convert json into DataVal
+ */
 trait JSONParser {
-
-  def innerValToJsValue(innerVal: InnerVal): JsValue = {
-    (innerVal.longV, innerVal.strV, innerVal.boolV) match {
-      case (Some(l), None, None) => new JsNumber(l)
-      case (None, Some(s), None) => new JsString(s)
-      case (None, None, Some(b)) => new JsBoolean(b)
+  import DataVal._
+  def innerValToJsValue(innerVal: DataVal): JsValue = {
+    innerVal.dataType match {
+      case BOOLEAN => JsBoolean(innerVal.toVal[Boolean])
+      case BYTE => JsNumber(BigDecimal(innerVal.toVal[Byte]))
+      case SHORT => JsNumber(BigDecimal(innerVal.toVal[Short]))
+      case INT => JsNumber(BigDecimal(innerVal.toVal[Int]))
+      case LONG => JsNumber(BigDecimal(innerVal.toVal[Long]))
+      case FLOAT => JsNumber(BigDecimal(innerVal.toVal[Float]))
+      case DOUBLE => JsNumber(BigDecimal(innerVal.toVal[Double]))
+      case STRING => JsString(innerVal.toVal[String])
       case _ => throw new Exception(s"InnerVal should be [long/integeer/short/byte/string/boolean]")
     }
   }
 
   def toInnerVal(s: String, dataType: String) = {
     dataType match {
-      case "string" | "str" => InnerVal.withStr(s)
-//      InnerVal.withStr(s.replaceAll ("[\"]", ""))
-      case "long" | "integer" | "int" => InnerVal.withLong(s.toLong)
-      case "boolean" | "bool" => InnerVal.withBoolean(s.toBoolean)
+      case BOOLEAN => DataVal.withBoolean(s.toBoolean)
+      case BYTE => DataVal.withByte(s.toByte)
+      case SHORT => DataVal.withShort(s.toShort)
+      case INT => DataVal.withInt(s.toInt)
+      case LONG => DataVal.withLong(s.toLong)
+      case FLOAT => DataVal.withFloat(s.toFloat)
+      case DOUBLE => DataVal.withDouble(s.toDouble)
+      case STRING => DataVal.withString(s)
       case _ =>
-        //        InnerVal.withStr("")
-        throw new RuntimeException(s"illegal datatype for string: dataType is $dataType for $s")
+      case _ => throw new Exception(s"InnerVal should be [long/integeer/short/byte/string/boolean]")
     }
   }
 
-  def toInnerVal(jsValue: JsValue) = {
+  def toInnerVal(jsValue: JsValue): DataVal = {
     jsValue match {
-      case n: JsNumber => (InnerVal.withLong(n.as[BigDecimal].toLong), "long")
-      case s: JsString => (InnerVal.withStr(s.as[String]), "string")
-      case b: JsBoolean => (InnerVal.withBoolean(b.as[Boolean]), "boolean")
+      case b: JsBoolean => DataVal.withBoolean(b.value)
+      case n: JsNumber =>
+        n.value match {
+          case b: Byte => DataVal.withByte(b)
+          case s: Short => DataVal.withShort(s)
+          case i: Int => DataVal.withInt(i)
+          case l: Long => DataVal.withLong(l)
+          case f: Float => DataVal.withFloat(f)
+          case d: Double => DataVal.withDouble(d)
+          case _ => throw new Exception(s"InnerVal should be [long/integeer/short/byte/string/boolean]")
+        }
+      case s: JsString => DataVal.withString(s.value)
       case _ => throw new Exception("JsonValue should be in [long/string/boolean].")
     }
   }
-  def jsValueToInnerVal(jsValue: JsValue, dataType: String): Option[InnerVal] = {
+  def jsValueToInnerVal(jsValue: JsValue, dataType: String): Option[DataVal] = {
+    val dType = dataType.toLowerCase()
     val ret = try {
       jsValue match {
         case n: JsNumber =>
-          val dType = dataType.toLowerCase()
           dType match {
-            case "string" | "str" => Some(InnerVal.withStr(jsValue.toString))
-            case "boolean" | "bool" => None
-            case "long" | "integer" | "int" => Some(InnerVal.withLong(n.as[Long]))
-            case _ => None
+            case x if !List(BYTE, SHORT, INT, LONG, FLOAT, DOUBLE).contains(x) => None
+            case _ => Some(toInnerVal(jsValue))
           }
         case s: JsString =>
-          dataType.toLowerCase() match {
-            case "string" => Some(InnerVal.withStr(s.as[String]))
-            case "boolean" => Some(InnerVal.withBoolean(s.as[String].toBoolean))
-            case "long" | "integer" | "int" => Some(InnerVal.withLong(s.as[String].toLong))
+          dType match {
+            case STRING => Some(toInnerVal(jsValue))
             case _ => None
           }
         case b: JsBoolean =>
-          dataType.toLowerCase() match {
-            case "string" => Some(InnerVal.withStr(b.toString))
-            case "boolean" => Some(InnerVal.withBoolean(b.as[Boolean]))
-            case "long" | "integer" | "int" => None
+          dType match {
+            case BOOLEAN => Some(toInnerVal(jsValue))
             case _ => None
           }
-        case _ =>
-          None
+        case _ => None
       }
     } catch {
       case e: Throwable =>
+//        Logger.error(s"$jsValue -> $dataType")
         None
     }
 
     ret
   }
-  def innerValToString(innerVal: InnerVal, dataType: String): String = {
-    val value = innerVal.value
+  def innerValToString(innerVal: DataVal, dataType: String): String = {
     dataType.toLowerCase() match {
-      case "string" | "str" => JsString(value.toString).toString
-      case _ => value.toString
+      case STRING => JsString(innerVal.toString).toString
+      case _ => innerVal.toString
     }
   }
   case class WhereParser(label: HLabel) extends JavaTokenParsers with JSONParser {

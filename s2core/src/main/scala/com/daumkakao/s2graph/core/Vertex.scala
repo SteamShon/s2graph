@@ -1,30 +1,33 @@
 package com.daumkakao.s2graph.core
 
 
-import HBaseElement._
+//import HBaseElement._
 import com.daumkakao.s2graph.core.models.{HColumnMeta, HServiceColumn, HService}
+import com.daumkakao.s2graph.core.types.VertexType._
 import org.apache.hadoop.hbase.client.Put
 import org.apache.hadoop.hbase.client.Delete
 import org.apache.hadoop.hbase.client.Mutation
+import org.apache.hadoop.hbase.util.SimplePositionedByteRange
 import play.api.libs.json.Json
 import scala.collection.mutable.ListBuffer
 import org.hbase.async.{DeleteRequest, HBaseRpc, PutRequest, GetRequest}
 /**
  *
  */
-case class Vertex(id: CompositeId,
+case class Vertex(id: VertexId,
   ts: Long,
-  props: Map[Byte, InnerVal] = Map.empty[Byte, InnerVal], op: Byte = 0) extends GraphElement {
+  props: Map[Byte, DataVal] = Map.empty[Byte, DataVal], op: Byte = 0) extends GraphElement {
 
   import GraphConstant._
-  //  import Vertex.{ lastModifiedAtColumn, deletedAtColumn }
-  lazy val serviceColumn = HServiceColumn.findById(id.colId)
+  lazy val serviceColumn = HServiceColumn.findById(id.columnId)
   lazy val service = HService.findById(serviceColumn.serviceId)
+  lazy val columnMetas = HColumnMeta.findAllByColumn(id.columnId)
+  lazy val columnMetasInvMap = columnMetas.map { cm => (cm.seq -> cm)} toMap
   lazy val (hbaseZkAddr, hbaseTableName) = (service.cluster, service.hTableName)
 
   lazy val rowKey = VertexRowKey(id)
   //  lazy val defaultProps = Map(defaultColumn -> (DateTime.now().getMillis / 1000).toInt)
-  lazy val defaultProps = Map(HColumnMeta.lastModifiedAtColumnSeq -> InnerVal.withLong(ts))
+  lazy val defaultProps = Map(HColumnMeta.lastModifiedAtColumnSeq -> DataVal.withLong(ts))
   lazy val qualifiersWithValues = for ((k, v) <- props ++ defaultProps) yield (VertexQualifier(k), v)
   lazy val innerId = id.innerId
 
@@ -36,7 +39,7 @@ case class Vertex(id: CompositeId,
 
   lazy val propsWithName = for {
     (seq, v) <- props
-    meta <- HColumnMeta.findByIdAndSeq(id.colId, seq)
+    meta <- HColumnMeta.findByIdAndSeq(id.columnId, seq)
   } yield (meta.name -> v.toString)
 
   //  lazy val propsWithName = for {
@@ -52,7 +55,7 @@ case class Vertex(id: CompositeId,
         //        play.api.Logger.debug(s"${rowKey.bytes.toList}")
         /**
          * TODO
-         * now user need to update one by one(can`t update multiple key values).
+         * now user need to update one by one(can not update multiple key values).
          * if user issue update on vertex with multiple key values then they all have same timestamp version.
          */
         // all props have same timestamp version in hbase.
@@ -102,7 +105,7 @@ case class Vertex(id: CompositeId,
   override def toString(): String = {
 
     val (serviceName, columnName) = if (id.isEdge) ("", "") else {
-      val serviceColumn = HServiceColumn.findById(id.colId)
+      val serviceColumn = HServiceColumn.findById(id.columnId)
       (serviceColumn.service.serviceName, serviceColumn.columnName)
     }
     val ls = ListBuffer(ts, GraphUtil.fromOp(op), "v", innerId, serviceName, columnName)
@@ -119,34 +122,31 @@ case class Vertex(id: CompositeId,
       case _ => false
     }
   }
-  def withProps(newProps: Map[Byte, InnerVal]) = Vertex(id, ts, newProps, op)
+  def withProps(newProps: Map[Byte, DataVal]) = Vertex(id, ts, newProps, op)
 }
 
 object Vertex {
 
-  val emptyVertex = Vertex(CompositeId.emptyCompositeId, System.currentTimeMillis())
+  val emptyVertex = Vertex(VertexId.emptyCompositeId, System.currentTimeMillis())
   def fromString(s: String): Option[Vertex] = Graph.toVertex(s)
 
-  def apply(kvs: Seq[org.hbase.async.KeyValue]): Option[Vertex] = {
+  def apply(vertex: Vertex, kvs: Seq[org.hbase.async.KeyValue]): Option[Vertex] = {
     if (kvs.isEmpty) None
     else {
-
       val head = kvs.head
       val headBytes = head.key()
-      val rowKey = VertexRowKey(headBytes, 0)
-
+      val pbr = new SimplePositionedByteRange(headBytes)
+      val rowKey = VertexRowKey(vertex.serviceColumn.columnType)(pbr, 0)
       var maxTs = Long.MinValue
-      /**
-       *
-       * TODO
-       * Make sure this doens`t violate any MVCC Version.
-       */
+
       val props =
         for {
           kv <- kvs
           kvQual = kv.qualifier()
-          qualifier = VertexQualifier(kvQual, 0, kvQual.length)
-          value = InnerVal(kv.value(), 0)
+          pbr = new SimplePositionedByteRange(kvQual)
+          qualifier = VertexQualifier(pbr, 0)
+          pbrValue = new SimplePositionedByteRange(kv.value())
+          value = DataVal(vertex.columnMetasInvMap(qualifier.propKey).columnType)(pbrValue, 0)
           ts = kv.timestamp()
         } yield {
           if (ts > maxTs) maxTs = ts

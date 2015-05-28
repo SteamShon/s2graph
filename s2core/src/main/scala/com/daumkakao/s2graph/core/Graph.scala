@@ -1,6 +1,8 @@
 package com.daumkakao.s2graph.core
 
 import com.daumkakao.s2graph.core.models.{HBaseModel, HLabel}
+import com.daumkakao.s2graph.core.types.LabelWithDirection
+import com.daumkakao.s2graph.core.types.VertexType.VertexId
 import org.apache.hadoop.hbase.HBaseConfiguration
 import org.apache.hadoop.hbase.client._
 import java.util.concurrent.Executors
@@ -645,25 +647,7 @@ object Graph {
     }
   }
 
-  def getVerticesAsync(vertices: Seq[Vertex]): Future[Seq[Vertex]] = {
-    // TODO: vertex needs meta for hbase table.
-    //    play.api.Logger.error(s"$vertices")
-    implicit val ex = executionContext
-    val futures = vertices.map { vertex =>
-      withTimeout[Option[Vertex]](vertex.hbaseZkAddr, {
-        //          val get = vertex.buildGet
-        val client = getClient(vertex.hbaseZkAddr)
-        //        val get = vertex.buildGetRequest()
-        val get = vertex.buildGet
-        defferedToFuture(client.get(get))(emptyKVs).map { kvs =>
-          Vertex(kvs)
-        }
-        //          Logger.error(s"$get")
-      }, { None })(singleGetTimeout)
 
-    }
-    Future.sequence(futures).map { result => result.toList.flatten }
-  }
   /**
    * Vertex
    */
@@ -698,7 +682,8 @@ object Graph {
   def deleteVertexAll(vertices: Seq[Vertex]): Unit = {
     for {
       vertex <- vertices
-      label <- (HLabel.findBySrcColumnId(vertex.id.colId) ++ HLabel.findByTgtColumnId(vertex.id.colId)).groupBy(_.id.get).map { _._2.head }
+      label <- (HLabel.findBySrcColumnId(vertex.id.columnId) ++
+        HLabel.findByTgtColumnId(vertex.id.columnId)).groupBy(_.id.get).map { _._2.head }
     } {
       deleteVertexAllAsync(vertex.toEdgeVertex, label)
     }
@@ -713,7 +698,7 @@ object Graph {
     }
     val step = Step(qParams)
     val q = Query(List(srcVertex), List(step), true)
-    val seen = new HashMap[(CompositeId, LabelWithDirection), Boolean]
+    val seen = new HashMap[(VertexId, LabelWithDirection), Boolean]
     for {
       edgesByVertex <- getEdgesAsync(q)
     } yield {
@@ -738,11 +723,30 @@ object Graph {
     }
   }
   // select
+  def getVerticesAsync(vertices: Seq[Vertex]): Future[Seq[Vertex]] = {
+    // TODO: vertex needs meta for hbase table.
+    //    play.api.Logger.error(s"$vertices")
+    implicit val ex = executionContext
+    val futures = vertices.map { vertex =>
+      withTimeout[Option[Vertex]](vertex.hbaseZkAddr, {
+        //          val get = vertex.buildGet
+        val client = getClient(vertex.hbaseZkAddr)
+        //        val get = vertex.buildGetRequest()
+        val get = vertex.buildGet
+        defferedToFuture(client.get(get))(emptyKVs).map { kvs =>
+          Vertex(vertex, kvs)
+        }
+        //          Logger.error(s"$get")
+      }, { None })(singleGetTimeout)
+
+    }
+    Future.sequence(futures).map { result => result.toList.flatten }
+  }
   def getVertex(vertex: Vertex): Future[Option[Vertex]] = {
     implicit val ex = executionContext
     val client = getClient(vertex.hbaseZkAddr)
     defferedToFuture(client.get(vertex.buildGet))(emptyKVs).map { kvs =>
-      Vertex(kvs)
+      Vertex(vertex, kvs)
     }
   }
   /**

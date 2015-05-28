@@ -10,6 +10,7 @@ object VertexType {
 
   object VertexId {
     import DataVal._
+    val emptyCompositeId = VertexId(defaultColId, DataVal.withLong(defaultInnerId), isEdge = true, useHash = true)
     val defaultColId = 0
     val defaultInnerId = 0
 
@@ -64,13 +65,13 @@ object VertexType {
   }
 
   object VertexQualifier {
-    def apply(bytes: Array[Byte], offset: Int): VertexQualifier = {
-      VertexQualifier(bytes(offset))
+    def apply(pbr: PositionedByteRange, offset: Int): VertexQualifier = {
+      VertexQualifier(pbr.get(offset))
     }
   }
 
   case class VertexQualifier(propKey: Byte) {
-    lazy val bytes = Array.fill(1)(propKey)
+    lazy val bytes = Array.fill(1)(propKey.toByte)
   }
 
 }

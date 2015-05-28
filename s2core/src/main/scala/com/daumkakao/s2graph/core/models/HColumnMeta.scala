@@ -44,7 +44,7 @@ object HColumnMeta {
 }
 
 case class HColumnMeta(kvsParam: Map[KEY, VAL]) extends HBaseModel[HColumnMeta]("HColumnMeta", kvsParam) {
-  override val columns = Seq("id", "columnId", "name", "seq")
+  override val columns = Seq("id", "columnId", "name", "seq", "columnType")
 
   val pk = Seq(("id", kvs("id")))
   val idxColumnIdName = Seq(("columnId", kvs("columnId")), ("name", kvs("name")))
@@ -57,6 +57,7 @@ case class HColumnMeta(kvsParam: Map[KEY, VAL]) extends HBaseModel[HColumnMeta](
   val columnId = kvs("columnId").toString.toInt
   val name = kvs("name").toString
   val seq = kvs("seq").toString.toByte
+  val columnType = kvs("columnType").toString
 
 }
 

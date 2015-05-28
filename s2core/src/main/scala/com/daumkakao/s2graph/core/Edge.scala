@@ -1,6 +1,8 @@
 package com.daumkakao.s2graph.core
-import HBaseElement._
+//import HBaseElement._
 import com.daumkakao.s2graph.core.models.{HLabel, HLabelIndex, HLabelMeta}
+import com.daumkakao.s2graph.core.types.EdgeType._
+import com.daumkakao.s2graph.core.types.LabelWithDirection
 import org.apache.hadoop.hbase.client.{ Delete, Mutation, Put, Result }
 import org.apache.hadoop.hbase.util.Bytes
 import org.hbase.async.{AtomicIncrementRequest, HBaseRpc, DeleteRequest, PutRequest}
@@ -10,7 +12,12 @@ import scala.collection.JavaConversions._
 import scala.collection.mutable.ListBuffer
 import play.api.libs.json.Json
 
-case class EdgeWithIndexInverted(srcVertex: Vertex, tgtVertex: Vertex, labelWithDir: LabelWithDirection, op: Byte, version: Long, props: Map[Byte, InnerValWithTs]) {
+case class EdgeWithIndexInverted(srcVertex: Vertex,
+                                 tgtVertex: Vertex,
+                                 labelWithDir: LabelWithDirection,
+                                 op: Byte,
+//                                 version: Long,
+                                 props: Map[Byte, DataValWithTs]) {
   import GraphConstant._
   import Edge._
 
@@ -19,20 +26,46 @@ case class EdgeWithIndexInverted(srcVertex: Vertex, tgtVertex: Vertex, labelWith
 
   lazy val rowKey = EdgeRowKey(srcVertex.id, labelWithDir, HLabelIndex.defaultSeq, isInverted = true)
 
-  lazy val qualifier = EdgeQualifierInverted(tgtVertex.id)
+//  lazy val xx = for {
+//    (propKey, propVal) <- props
+//  } yield {
+//    val qualifier = EdgeQualifierInverted(tgtVertex.id, propKey)
+//    val value = EdgeValueInverted(op, propVal.dataVal)
+//
+//  }
 
   // only for toString.
   lazy val label = HLabel.findById(labelWithDir.labelId)
-  lazy val propsWithoutTs = props.map(kv => (kv._1 -> kv._2.innerVal))
-
-  lazy val value = EdgeValueInverted(op, props.toList)
-
-  def buildPut() = {
-    val put = new Put(rowKey.bytes)
-    put.addColumn(edgeCf, qualifier.bytes, version, value.bytes)
+////  lazy val propsWithoutTs = props.map(kv => (kv._1 -> kv._2.dataVal))
+//
+//  lazy val value = EdgeValueInverted(op, props.toList)
+  private def buildQualifierValueTsList() = {
+    for {
+      (propKey, propVal) <- props
+      qualifier = EdgeQualifierInverted(tgtVertex.id, propKey)
+      value = EdgeValueInverted(op, propVal.dataVal)
+      ts = propVal.ts
+    } yield {
+      (qualifier, value, ts)
+    }
   }
-  def buildPutAsync() = {
-    new PutRequest(label.hbaseTableName.getBytes, rowKey.bytes, edgeCf, qualifier.bytes, value.bytes, version)
+  def buildPuts() = {
+    val put = new Put(rowKey.bytes)
+    buildQualifierValueTsList().foreach { case (qualifier, value, ts) =>
+      put.addColumn(edgeCf, qualifier.bytes, ts, value.bytes)
+    }
+    List(put)
+  }
+  def buildPutsAsync() = {
+    /** todo, timestamp is not considered to be long[][] in asynchbase. */
+    buildQualifierValueTsList().map { case (qualifier, value, ts) =>
+      new PutRequest(label.hbaseTableName.getBytes,
+      rowKey.bytes,
+      edgeCf,
+      qualifier.bytes,
+      value.bytes,
+      ts)
+    }
   }
 
   def isSame(other: Any): Boolean = {
@@ -49,34 +82,34 @@ case class EdgeWithIndexInverted(srcVertex: Vertex, tgtVertex: Vertex, labelWith
     ls.mkString("\t")
   }
 }
-case class EdgeWithIndex(srcVertex: Vertex, tgtVertex: Vertex, labelWithDir: LabelWithDirection, op: Byte, version: Long, labelIndexSeq: Byte, props: Map[Byte, InnerVal]) {
-
-  assert(props.get(HLabelMeta.timeStampSeq).isDefined)
-
-  lazy val ts = props(HLabelMeta.timeStampSeq).longV.get
-
+case class EdgeWithIndex(srcVertex: Vertex,
+                         tgtVertex: Vertex,
+                         labelWithDir: LabelWithDirection,
+                         op: Byte,
+                         version: Long,
+                         labelIndexSeq: Byte,
+                         props: Map[Byte, DataVal]) {
   import GraphConstant._
   import Edge._
+  assert(props.get(HLabelMeta.timeStampSeq).isDefined)
 
+  lazy val ts = props(HLabelMeta.timeStampSeq).toVal[Long]
   lazy val rowKey = EdgeRowKey(srcVertex.id, labelWithDir, labelIndexSeq, isInverted = false)
   lazy val labelIndex = HLabelIndex.findByLabelIdAndSeq(labelWithDir.labelId, labelIndexSeq).get
-  lazy val defaultIndexMetas = labelIndex.sortKeyTypes.map(meta => meta.seq -> meta.defaultInnerVal).toMap
-  lazy val labelIndexMetaSeqs = labelIndex.metaSeqs
+  lazy val labelMetasMap = labelIndex.sortKeyTypes.map(labelMeta => labelMeta.seq -> labelMeta).toMap
+//  lazy val defaultIndexMetas = labelIndex.sortKeyTypes.map(meta => meta.seq -> meta.defaultInnerVal).toMap
+//  lazy val labelIndexMetaSeqs = labelIndex.metaSeqs
 
-  lazy val orders = for (k <- labelIndexMetaSeqs) yield {
-    props.get(k) match {
+  lazy val indexPropsKeyVal = for (labelMetaSeq <- labelIndex.metaSeqs) yield {
+    props.get(labelMetaSeq) match {
       case None =>
-        /**
-         *  TODO: agly hack
-         * 	now we double store target vertex.innerId/srcVertex.innerId for easy development. later fix this to only store id once
-         */
-        val v = k match {
-          case HLabelMeta.timeStampSeq => InnerVal.withLong(ts)
+        val v = labelMetaSeq match {
+          case HLabelMeta.timeStampSeq => DataVal.withLong(ts)
           case HLabelMeta.toSeq => tgtVertex.innerId
           case HLabelMeta.fromSeq => //srcVertex.innerId
             // for now, it does not make sense to build index on srcVertex.innerId since all edges have same data.
             throw new RuntimeException("_from on indexProps is not supported")
-          case _ => defaultIndexMetas(k)
+          case _ => labelMetasMap(labelMetaSeq).defaultInnerVal
         }
         //        val v = if (k == LabelMeta.timeStampSeq) InnerVal.withLong(ts) else defaultIndexMetas(k)
         (k -> v)

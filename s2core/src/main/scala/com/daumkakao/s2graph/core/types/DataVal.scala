@@ -2,6 +2,7 @@ package com.daumkakao.s2graph.core
 
 import org.apache.hadoop.hbase.types.{OrderedBlob, OrderedString, OrderedNumeric}
 import org.apache.hadoop.hbase.util._
+import java.math.BigDecimal
 import org.junit.Assert._
 
 import scala.reflect.ClassTag
@@ -12,6 +13,7 @@ import scala.reflect.ClassTag
 object DataVal {
   type Val = DataVal
   val order = Order.DESCENDING
+
   val LONG = "long"
   val INT = "int"
   val BYTE = "byte"
@@ -20,6 +22,7 @@ object DataVal {
   val FLOAT = "float"
   val DOUBLE = "double"
   val STRING = "string"
+//  val BIGDECIMAL = "bigdecimal"
 
   val numOfBytesForHash = 2
   val numOfBytesForTs = 8
@@ -93,13 +96,18 @@ object DataVal {
       case f: Float => 4 + 1
       case d: Double => 8 + 1
       case s: String => s.length() + 2
+//      case b: BigDecimal => ???
     }
   }
-
-  def withLong(l: Long): DataVal = DataVal(LONG)(l)
-  def withStr(s: String): DataVal = DataVal(STRING)(s)
   def withBoolean(b: Boolean): DataVal = DataVal(BOOLEAN)(b)
-
+  def withByte(b: Byte): DataVal = DataVal(BYTE)(b)
+  def withShort(s: Short): DataVal = DataVal(SHORT)(s)
+  def withInt(i: Int): DataVal = DataVal(INT)(i)
+  def withLong(l: Long): DataVal = DataVal(LONG)(l)
+  def withFloat(f: Float): DataVal = DataVal(FLOAT)(f)
+  def withDouble(d: Double): DataVal = DataVal(DOUBLE)(d)
+  def withString(s: String): DataVal = DataVal(STRING)(s)
+//  def withBigDecimal(b: BigDecimal): DataVal = DataVal(BIGDECIMAL)(b)
 }
 /** need to be refactor once understand typeTag
   * may be variable length can be used to save space but not sure yet.
@@ -126,6 +134,8 @@ case class DataVal(dataType: String)(value: Any) {
         OrderedBytes.encodeFloat64(pbr, value.asInstanceOf[Double], order)
       case STRING =>
         OrderedBytes.encodeString(pbr, value.asInstanceOf[String], order)
+//      case BIGDECIMAL =>
+//        OrderedBytes.encodeNumeric(pbr, value.asInstanceOf[BigDecimal], order)
     }
     pbr.getBytes()
   }

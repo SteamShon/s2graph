@@ -1,7 +1,7 @@
 package com.daumkakao.s2graph.core.models
 
 import com.daumkakao.s2graph.core.HBaseElement.InnerVal
-import com.daumkakao.s2graph.core.JSONParser
+import com.daumkakao.s2graph.core.{DataVal, JSONParser}
 import com.daumkakao.s2graph.core.models.HBaseModel.{VAL, KEY}
 import play.api.libs.json.{Json, JsObject, JsValue}
 
@@ -64,7 +64,7 @@ object HLabelMeta extends JSONParser {
         model
     }
   }
-  def convert(labelId: Int, jsValue: JsValue): Map[Byte, InnerVal] = {
+  def convert(labelId: Int, jsValue: JsValue): Map[Byte, DataVal] = {
     val ret = for {
       (k, v) <- jsValue.as[JsObject].fields
       meta <- HLabelMeta.findByName(labelId, k)
@@ -89,6 +89,6 @@ case class HLabelMeta(kvsParam: Map[KEY, VAL]) extends HBaseModel[HLabelMeta]("H
   val dataType = kvs("dataType").toString
 //  val usedInIndex = kvs("usedInIndex").toString.toBoolean
 
-  lazy val defaultInnerVal = if (defaultValue.isEmpty) InnerVal.withStr("") else toInnerVal(defaultValue, dataType)
+  lazy val defaultInnerVal = if (defaultValue.isEmpty) DataVal.withStr("") else toInnerVal(defaultValue, dataType)
   lazy val toJson = Json.obj("name" -> name, "defaultValue" -> defaultValue, "dataType" -> dataType)
 }
