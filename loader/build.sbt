@@ -12,7 +12,8 @@ libraryDependencies ++= Seq(
   "org.specs2" %% "specs2-core" % "2.4.11" % "test",
   "org.scalatest" %% "scalatest" % "2.2.1" % "test",
   "org.apache.hbase" % "hbase-hadoop-compat" % "0.98.14-hadoop2",
-  "org.apache.hadoop" % "hadoop-distcp" % Common.hadoopVersion
+  "org.apache.hadoop" % "hadoop-distcp" % Common.hadoopVersion,
+  "org.hbase" % "asynchbase" % "1.7.0"
 )
 
 crossScalaVersions := Seq("2.10.6")

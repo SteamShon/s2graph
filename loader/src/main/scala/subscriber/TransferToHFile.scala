@@ -2,9 +2,9 @@ package subscriber
 
 
 import com.kakao.s2graph.core._
-import com.kakao.s2graph.core.mysqls.Label
-import com.kakao.s2graph.core.types.{LabelWithDirection, SourceVertexId}
-import org.apache.hadoop.hbase.client.Put
+import com.kakao.s2graph.core.mysqls.{LabelMeta, Label}
+import com.kakao.s2graph.core.storage.hbase.AsynchbaseMutationBuilder
+import com.kakao.s2graph.core.types.{InnerValLikeWithTs, LabelWithDirection, SourceVertexId}
 import org.apache.hadoop.hbase.io.compress.Compression.Algorithm
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding
 import org.apache.hadoop.hbase.mapreduce.{TableOutputFormat}
@@ -13,13 +13,52 @@ import org.apache.hadoop.hbase.regionserver.BloomType
 import org.apache.hadoop.hbase.util.Bytes
 import org.apache.spark.{SparkContext}
 import org.apache.spark.rdd.RDD
-import org.hbase.async.{PutRequest}
+import org.hbase.async.{AtomicIncrementRequest, DeleteRequest, HBaseRpc, PutRequest}
 import play.api.libs.json.Json
 import s2.spark.{SparkApp}
 import spark.{FamilyHFileWriteOptions, KeyFamilyQualifier, HBaseContext}
 import scala.collection.JavaConversions._
 
+/**
+ * transform tsv format edges into key value.
+ */
+class TsvToKeyValue extends JSONParser {
 
+  private def rpcToKeyValues(rpc: HBaseRpc): Seq[KeyValue] = {
+    rpc match {
+      case p: PutRequest => Seq(new KeyValue(p.key(), p.family(), p.qualifier, p.timestamp, p.value))
+      case d: DeleteRequest => d.qualifiers().toSeq.map { qualifier => new KeyValue(d.key(), d.family(), qualifier, d.timestamp(), Array.empty[Byte]) }
+      case _ => throw new RuntimeException(s"not supported rpc type. rpc should be in (PutRequest, DeleteRequest). $rpc")
+    }
+  }
+
+  def toKeyValue(s: String, labelMapping: Map[String, String], autoEdgeCreate: Boolean): Seq[KeyValue] = {
+    Graph.toGraphElement(s, labelMapping).toSeq.flatMap { element =>
+      element match {
+        case e: Edge =>
+          val relEdges = if (autoEdgeCreate) e.relatedEdges else Seq(e)
+          relEdges.flatMap { relEdge =>
+            relEdge.edgesWithIndex.flatMap { indexEdge =>
+              val rpcs = indexEdge.op match {
+                case i if i == GraphUtil.operations("insertBulk") | i == GraphUtil.operations("insert") =>
+                  GraphSubscriberHelper.builder.buildPutsAsync(indexEdge)
+                //                  ++ GraphSubscriberHelper.builder.buildIncrementsAsync(indexEdge)
+                case d if d == GraphUtil.operations("delete") =>
+                  GraphSubscriberHelper.builder.buildDeletesAsync(indexEdge)
+                //                  ++ GraphSubscriberHelper.builder.buildIncrementsAsync(indexEdge, -1L)
+              }
+
+              rpcs.flatMap { rpc => rpcToKeyValues(rpc) }
+            }
+          }
+        case v: Vertex =>
+          // not support vertex yet. use self edge for now.
+          Seq.empty
+        case _ => throw new RuntimeException(s"not supported graph element type. $s")
+      }
+    }
+  }
+}
 object TransferToHFile extends SparkApp with JSONParser {
 
   val usages =
@@ -39,14 +78,18 @@ object TransferToHFile extends SparkApp with JSONParser {
   /** build key values */
   case class DegreeKey(vertexIdStr: String, labelName: String, direction: String)
 
-  private def insertBulkForLoaderAsync(edge: Edge, createRelEdges: Boolean = true): List[PutRequest] = {
-    val relEdges = if (createRelEdges) edge.relatedEdges else List(edge)
-    buildPutRequests(edge.toSnapshotEdge) ++ relEdges.toList.flatMap { e =>
-      e.edgesWithIndex.flatMap { indexEdge => buildPutRequests(indexEdge) }
-    }
-  }
+  val parser = new TsvToKeyValue()
 
-  def buildDegrees(msgs: RDD[String], labelMapping: Map[String, String], edgeAutoCreate: Boolean) = {
+  //
+  //
+  //  private def insertBulkForLoaderAsync(edge: Edge, createRelEdges: Boolean = true): List[PutRequest] = {
+  //    val relEdges = if (createRelEdges) edge.relatedEdges else List(edge)
+  //    buildPutRequests(edge.toSnapshotEdge) ++ relEdges.toList.flatMap { e =>
+  //      e.edgesWithIndex.flatMap { indexEdge => buildPutRequests(indexEdge) }
+  //    }
+  //  }
+
+  def buildDegrees(msgs: RDD[String], labelMapping: Map[String, String], edgeAutoCreate: Boolean): RDD[(DegreeKey, Long)] = {
     for {
       msg <- msgs
       tokens = GraphUtil.split(msg)
@@ -55,24 +98,22 @@ object TransferToHFile extends SparkApp with JSONParser {
       direction = if (tempDirection != "out" && tempDirection != "in") "out" else tempDirection
       reverseDirection = if (direction == "out") "in" else "out"
       convertedLabelName = labelMapping.get(tokens(5)).getOrElse(tokens(5))
-      (vertexIdStr, vertexIdStrReversed) = direction match {
-        case "out" => (tokens(3), tokens(4))
-        case _ => (tokens(4), tokens(3))
-      }
+      (vertexIdStr, vertexIdStrReversed) = (tokens(3), tokens(4))
       degreeKey = DegreeKey(vertexIdStr, convertedLabelName, direction)
       degreeKeyReversed = DegreeKey(vertexIdStrReversed, convertedLabelName, reverseDirection)
       extra = if (edgeAutoCreate) List(degreeKeyReversed -> 1L) else Nil
       output <- List(degreeKey -> 1L) ++ extra
     } yield output
   }
-  def buildPutRequests(snapshotEdge: SnapshotEdge): List[PutRequest] = {
-    val kvs = GraphSubscriberHelper.g.storage.snapshotEdgeSerializer(snapshotEdge).toKeyValues.toList
-    kvs.map { kv => new PutRequest(kv.table, kv.row, kv.cf, kv.qualifier, kv.value, kv.timestamp) }
-  }
-  def buildPutRequests(indexEdge: IndexEdge): List[PutRequest] = {
-    val kvs = GraphSubscriberHelper.g.storage.indexEdgeSerializer(indexEdge).toKeyValues.toList
-    kvs.map { kv => new PutRequest(kv.table, kv.row, kv.cf, kv.qualifier, kv.value, kv.timestamp) }
-  }
+  //
+  //  private def buildPutRequests(snapshotEdge: SnapshotEdge): List[PutRequest] = {
+  //    val kvs = GraphSubscriberHelper.g.storage.snapshotEdgeSerializer(snapshotEdge).toKeyValues.toList
+  //    kvs.map { kv => new PutRequest(kv.table, kv.row, kv.cf, kv.qualifier, kv.value, kv.timestamp) }
+  //  }
+  //  def buildPutRequests(indexEdge: IndexEdge): List[PutRequest] = {
+  //    val kvs = GraphSubscriberHelper.g.storage.indexEdgeSerializer(indexEdge).toKeyValues.toList
+  //    kvs.map { kv => new PutRequest(kv.table, kv.row, kv.cf, kv.qualifier, kv.value, kv.timestamp) }
+  //  }
   def buildDegreePutRequests(vertexId: String, labelName: String, direction: String, degreeVal: Long): List[PutRequest] = {
     val label = Label.findByName(labelName).getOrElse(throw new RuntimeException(s"$labelName is not found in DB."))
     val dir = GraphUtil.directions(direction)
@@ -80,8 +121,12 @@ object TransferToHFile extends SparkApp with JSONParser {
       throw new RuntimeException(s"$vertexId can not be converted into innerval")
     }
     val vertex = Vertex(SourceVertexId(label.srcColumn.id.get, innerVal))
+
+    val ts = System.currentTimeMillis()
+    val propsWithTs = Map(LabelMeta.timeStampSeq -> InnerValLikeWithTs.withLong(ts, ts, label.schemaVersion))
     val labelWithDir = LabelWithDirection(label.id.get, dir)
-    val edge = Edge(vertex, vertex, labelWithDir)
+    val edge = Edge(vertex, vertex, labelWithDir, propsWithTs=propsWithTs)
+
     edge.edgesWithIndex.flatMap { indexEdge =>
       GraphSubscriberHelper.g.storage.indexEdgeSerializer(indexEdge).toKeyValues.map { kv =>
         new PutRequest(kv.table, kv.row, kv.cf, Array.empty[Byte], Bytes.toBytes(degreeVal), kv.timestamp)
@@ -104,17 +149,9 @@ object TransferToHFile extends SparkApp with JSONParser {
   def toKeyValues(strs: Seq[String], labelMapping: Map[String, String], autoEdgeCreate: Boolean): Iterator[KeyValue] = {
     val kvs = for {
       s <- strs
-      element <- Graph.toGraphElement(s, labelMapping).toSeq if element.isInstanceOf[Edge]
-      edge = element.asInstanceOf[Edge]
-      putRequest <- insertBulkForLoaderAsync(edge, autoEdgeCreate)
-    } yield {
-        val p = putRequest
-        val kv = new KeyValue(p.key(), p.family(), p.qualifier, p.timestamp, p.value)
+      kv <- parser.toKeyValue(s, labelMapping, autoEdgeCreate)
+    } yield kv
 
-        //        println(s"[Edge]: $edge\n[Put]: $p\n[KeyValue]: ${kv.getRow.toList}, ${kv.getQualifier.toList}, ${kv.getValue.toList}, ${kv.getTimestamp}")
-
-        kv
-      }
     kvs.toIterator
   }
 
@@ -129,14 +166,14 @@ object TransferToHFile extends SparkApp with JSONParser {
     val labelMapping = if (args.length >= 7) GraphSubscriberHelper.toLabelMapping(args(6)) else Map.empty[String, String]
     val autoEdgeCreate = if (args.length >= 8) args(7).toBoolean else false
     val buildDegree = if (args.length >= 9) args(8).toBoolean else true
-
+    val compressionAlgorithm = if (args.length >= 10) args(9) else "lz4"
     val conf = sparkConf(s"$input: TransferToHFile")
     conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
     conf.set("spark.kryoserializer.buffer.mb", "24")
 
     val sc = new SparkContext(conf)
 
-
+    Management.createTable(zkQuorum, tableName, List("e", "v"), maxHFilePerResionServer, None, compressionAlgorithm)
 
     /** set up hbase init */
     val hbaseConf = HBaseConfiguration.create()
@@ -153,30 +190,18 @@ object TransferToHFile extends SparkApp with JSONParser {
       GraphSubscriberHelper.apply(phase, dbUrl, "none", "none")
       toKeyValues(iter.toSeq, labelMapping, autoEdgeCreate)
     }
-    //
-    //    val newRDD = if (!buildDegree) new HFileRDD(kvs)
-    //    else {
-    //      val degreeKVs = buildDegrees(rdd, labelMapping, autoEdgeCreate).reduceByKey { (agg, current) =>
-    //        agg + current
-    //      }.mapPartitions { iter =>
-    //        val phase = System.getProperty("phase")
-    //        GraphSubscriberHelper.apply(phase, dbUrl, "none", "none")
-    //        toKeyValues(iter.toSeq)
-    //      }
-    //      new HFileRDD(kvs ++ degreeKVs)
-    //    }
-    //
-    //    newRDD.toHFile(hbaseConf, zkQuorum, tableName, maxHFilePerResionServer, tmpPath)
-    val merged = if (!buildDegree) kvs
-    else {
-      kvs ++ buildDegrees(rdd, labelMapping, autoEdgeCreate).reduceByKey { (agg, current) =>
-        agg + current
-      }.mapPartitions { iter =>
-        val phase = System.getProperty("phase")
-        GraphSubscriberHelper.apply(phase, dbUrl, "none", "none")
-        toKeyValues(iter.toSeq)
+
+    val merged =
+      if (!buildDegree) kvs
+      else {
+        kvs ++ buildDegrees(rdd, labelMapping, autoEdgeCreate).reduceByKey { (agg, current) =>
+          agg + current
+        }.mapPartitions { iter =>
+          val phase = System.getProperty("phase")
+          GraphSubscriberHelper.apply(phase, dbUrl, "none", "none")
+          toKeyValues(iter.toSeq)
+        }
       }
-    }
 
     val hbaseSc = new HBaseContext(sc, hbaseConf)
     def flatMap(kv: KeyValue): Iterator[(KeyFamilyQualifier, Array[Byte])] = {
@@ -192,3 +217,7 @@ object TransferToHFile extends SparkApp with JSONParser {
   }
 
 }
+
+
+
+
