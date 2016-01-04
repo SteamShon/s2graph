@@ -1,16 +1,14 @@
 package subscriber
 
 
-import java.util
-
 import com.kakao.s2graph.core.storage.hbase.{AsynchbaseMutationBuilder, AsynchbaseStorage}
 import com.kakao.s2graph.core.{Graph, _}
 import com.typesafe.config.{Config, ConfigFactory}
 import kafka.javaapi.producer.Producer
 import kafka.producer.KeyedMessage
-import org.apache.hadoop.hbase.{HBaseConfiguration, TableName}
+import org.apache.hadoop.hbase.{HBaseConfiguration}
 import org.apache.hadoop.hbase.client._
-import org.apache.spark.{Accumulable, SparkContext}
+import org.apache.spark.{Accumulable}
 import s2.spark.{HashMapParam, SparkApp, WithKafka}
 
 import scala.collection.JavaConversions._
@@ -26,15 +24,14 @@ object GraphConfig {
     database = dbUrl.getOrElse("jdbc:mysql://localhost:3306/graph_dev")
     zkQuorum = zkAddr.getOrElse("localhost")
 
-    //    val newConf = new util.HashMap[String, Object]()
-    //    newConf.put("hbase.zookeeper.quorum", zkQuorum)
-    //    newConf.put("db.default.url", database)
-    //    newConf.put("kafka.metadata.broker.list", kafkaBrokers)
+    /** this configuration is missing on Graph.DefaultConfig. seperate issue should be filed to fix this. */
+    val missingConf = Map("future.cache.max.idle.ttl" -> "60000", "future.cache.max.size" -> "10000")
+
     val newConf =
       if (kafkaBrokerList.isEmpty) Map("hbase.zookeeper.quorum" -> zkQuorum, "db.default.url" -> database, "cache.ttl.seconds" -> cacheTTL)
       else Map("hbase.zookeeper.quorum" -> zkQuorum, "db.default.url" -> database, "kafka.metadata.broker.list" -> kafkaBrokers, "cache.ttl.seconds" -> cacheTTL)
 
-    ConfigFactory.parseMap(newConf).withFallback(Graph.DefaultConfig)
+    ConfigFactory.parseMap(newConf ++ missingConf).withFallback(Graph.DefaultConfig)
   }
 }
 
@@ -46,9 +43,6 @@ object GraphSubscriberHelper extends WithKafka {
 
   lazy val producer = new Producer[String, String](kafkaConf(GraphConfig.kafkaBrokers))
   var config: Config = _
-  private val writeBufferSize = 1024 * 1024 * 8
-  private val sleepPeriod = 10000
-  private val maxTryNum = 10
 
   var g: Graph = null
   var storage: AsynchbaseStorage = null
